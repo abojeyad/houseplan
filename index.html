@@ -1,0 +1,778 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Block Mockup v5</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@300;400;500;600&display=swap');
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%;font-family:'IBM Plex Sans Arabic',sans-serif;background:#ddd8d0;display:flex;flex-direction:column;overflow:hidden}
+#toolbar{
+  background:#1a1a1a;color:#e8e0d0;display:flex;align-items:center;gap:0;
+  height:50px;padding:0 18px;flex-shrink:0;border-bottom:1px solid #2e2e2e;user-select:none;flex-wrap:wrap;
+}
+#toolbar .t-title{font-size:12.5px;font-weight:500;letter-spacing:.04em;flex:1}
+.t-sep{width:1px;height:28px;background:#2e2e2e;margin:0 14px}
+.t-group{display:flex;align-items:center;gap:6px}
+.t-label{font-size:10px;color:#777}
+.layer-btn{background:transparent;border:1px solid #333;color:#777;padding:3px 9px;border-radius:4px;cursor:pointer;font-size:10px;font-family:'IBM Plex Sans Arabic',sans-serif;transition:.15s;}
+.layer-btn.on{border-color:#555;color:#bbb;background:#252525}
+#canvas{
+  flex:1;overflow:hidden;position:relative;cursor:grab;
+  background:#ddd8d0;
+  background-image:radial-gradient(circle,#bbb8b0 1px,transparent 1px);
+  background-size:20px 20px;
+}
+#canvas.dragging{cursor:grabbing}
+#main-svg{
+  position:absolute;
+  top:0;left:0;
+  width:100%;height:100%;
+  background:transparent;
+}
+.th{font-family:'IBM Plex Sans Arabic',Arial,sans-serif;font-size:13px;font-weight:700}
+.ts{font-family:'IBM Plex Sans Arabic',Arial,sans-serif;font-size:10px}
+.tn{font-family:'IBM Plex Sans Arabic',Arial,sans-serif;font-size:9px;font-weight:500}
+.twl{font-family:'IBM Plex Sans Arabic',Arial,sans-serif;font-size:7px;fill:#b04000}
+#reset-btn{
+  position:absolute;bottom:16px;left:16px;
+  background:#1a1a1a;color:#e8e0d0;border:none;
+  padding:6px 14px;border-radius:4px;cursor:pointer;
+  font-size:11px;font-family:'IBM Plex Sans Arabic',sans-serif;
+  opacity:0.7;transition:.2s;z-index:10;
+}
+#reset-btn:hover{opacity:1}
+</style>
+</head>
+<body>
+
+<div id="toolbar">
+  <div class="t-title">موكاب الكتل — وحدتان 8m × 21m</div>
+  <div class="t-sep"></div>
+  <div class="t-group">
+    <span class="t-label">طبقات</span>
+    <button class="layer-btn"     id="lb-fills"        onclick="toggleLayer('fills')">التعبئة</button>
+    <button class="layer-btn on"  id="lb-walls"        onclick="toggleLayer('walls')">الجدران</button>
+    <button class="layer-btn"     id="lb-wlabels"      onclick="toggleLayer('wlabels')">أسماء الجدران</button>
+    <button class="layer-btn"     id="lb-letters"      onclick="toggleLayer('letters')">الأحرف</button>
+    <button class="layer-btn on"  id="lb-names"        onclick="toggleLayer('names')">المسميات</button>
+    <button class="layer-btn"     id="lb-innerdims"    onclick="toggleLayer('innerdims')">أبعاد داخلية</button>
+    <button class="layer-btn on"  id="lb-doors"        onclick="toggleLayer('doors')">الأبواب</button>
+    <button class="layer-btn"     id="lb-doorlabels"   onclick="toggleLayer('doorlabels')">مقاسات الأبواب</button>
+    <button class="layer-btn on"  id="lb-windows"      onclick="toggleLayer('windows')">النوافذ</button>
+    <button class="layer-btn"     id="lb-windowlabels" onclick="toggleLayer('windowlabels')">مقاسات النوافذ</button>
+  </div>
+</div>
+
+<div id="canvas">
+  <svg id="main-svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 980"></svg>
+</div>
+<button id="reset-btn" onclick="resetView()">⟳ إعادة الضبط</button>
+
+<script>
+// ══════════════════════════════════════════════════════════
+// الثوابت العامة
+// المقياس: 28px = 1م
+// المبنى: x=90..538 (16م)، y=60..648 (21م)
+// الموقع: x=48..580 (19م)، y=18..732 (25.5م)
+// ══════════════════════════════════════════════════════════
+
+const SCALE = 28; // px per meter
+
+// ── ألوان وسُمك الجدران ──
+const WALL_INT_COLOR  = '#5a6570'; // جدار داخلي
+const WALL_INT_WIDTH  = 1.4;
+const WALL_EXT_COLOR  = '#2c3e50'; // جدار خارجي
+const WALL_EXT_WIDTH  = 3;
+
+// ── إعدادات خطوط الكوتة ──
+const DIM = { stroke:'#2c3e50', tick:6, fs:'8.5px', fw:'600' };
+
+// ── إعدادات الأبواب ──
+const DOOR = {
+  gapWidth:  6,
+  jamb:      1.8,
+  jambLen:   4,
+  gapColor:  '#ddd8d0',
+  jambColor: '#2c3e50',
+};
+
+// ── إعدادات النوافذ ──
+const WIN = {
+  gapColor:  '#b8ddf0',
+  gapWidth:  6,
+  jambColor: '#2c3e50',
+  jamb:      1.8,
+  jambLen:   4,
+};
+
+// ══════════════════════════════════════════════════════════
+// قاموس المساحات
+// كل مساحة: { x1, y1, x2, y2, fill, name, dim, opacity? }
+// الجيران (N/S/E/W): اسم المساحة الجارة أو 'ext' للخارج
+// ملاحظة: I و AD فراغات شفافة تمثل منطقة فصل بين الوحدتين
+// ══════════════════════════════════════════════════════════
+
+const spaces = {
+  // ══ المبنى الأيمن ══
+  'H':  { x1:426, y1:60,  x2:538, y2:172, fill:'#dce8f0', name:'غرفة',      dim:'4×4',   N:'ext', S:'F+G', E:'ext', W:'N'    },
+  'N':  { x1:314, y1:60,  x2:426, y2:172, fill:'#dce8f0', name:'مطبخ',      dim:'4×4',   N:'ext', S:'M',   E:'H',   W:'ext'  },
+  'G':  { x1:468, y1:172, x2:538, y2:228, fill:'#dce8f0', name:'حمام',      dim:'2.5×2', N:'H',   S:'E',   E:'ext', W:'F'    },
+  'F':  { x1:370, y1:172, x2:468, y2:228, fill:'#dce8f0', name:'ممر',       dim:'3.5×2', N:'H',   S:'E',   E:'G',   W:'M'    },
+  'M':  { x1:314, y1:172, x2:370, y2:228, fill:'#dce8f0', name:'مخزن',      dim:'2×2',   N:'N',   S:'L',   E:'F',   W:'ext'  },
+  'E':  { x1:426, y1:228, x2:538, y2:340, fill:'#dce8f0', name:'غرفة',      dim:'4×4',   N:'F+G', S:'C+D', E:'ext', W:'L'    },
+  'L':  { x1:314, y1:228, x2:426, y2:396, fill:'#dce8f0', name:'صالة',      dim:'4×6',   N:'M',   S:'AC',  E:'E',   W:'ext'  },
+  'D':  { x1:468, y1:340, x2:538, y2:396, fill:'#dce8f0', name:'حمام',      dim:'2.5×2', N:'E',   S:'B',   E:'ext', W:'C'    },
+  'C':  { x1:426, y1:340, x2:468, y2:396, fill:'#dce8f0', name:'ممر',       dim:'1.5×2', N:'E',   S:'B',   E:'D',   W:'L'    },
+  'B':  { x1:426, y1:396, x2:538, y2:536, fill:'#dce8f0', name:'غرفة نوم',  dim:'4×5',   N:'C+D', S:'A',   E:'ext', W:'J'    },
+  'J':  { x1:370, y1:396, x2:426, y2:578, fill:'#dce8f0', name:'ممر',       dim:'2×6.5', N:'L',   S:'K',   E:'B',   W:'I'    },
+  // I: فراغ شفاف — فاصل غير مادي بين الوحدتين، يتداخل مع AC وW عمداً
+  'I':  { x1:314, y1:396, x2:370, y2:648, fill:'#dce8f0', name:'',          dim:'',      N:'L',   S:'ext', E:'J+K', W:'AC+W', opacity:0.4 },
+  'A':  { x1:426, y1:536, x2:538, y2:648, fill:'#dce8f0', name:'مجلس رجال', dim:'4×4',   N:'B',   S:'ext', E:'ext', W:'J+K'  },
+  'K':  { x1:370, y1:578, x2:426, y2:648, fill:'#dce8f0', name:'حمام',      dim:'2×2.5', N:'J',   S:'ext', E:'A',   W:'I'    },
+  // AC وW: منطقة المدخل المشترك، تشغل الفراغ الأوسط جنوباً
+  'AC': { x1:258, y1:396, x2:370, y2:452, fill:'#f0e8d8', name:'مصعد',      dim:'4×2',   N:'L',   S:'W',   E:'I',   W:'ext'  },
+  'W':  { x1:258, y1:452, x2:370, y2:648, fill:'#e8e4d8', name:'دخول',      dim:'4×7',   N:'AC',  S:'ext', E:'I',   W:'ext'  },
+
+  // ══ المبنى الأيسر ══
+  'V':  { x1:90,  y1:60,  x2:202, y2:172, fill:'#dceee0', name:'غرفة',      dim:'4×4',   N:'ext', S:'T+U', E:'Z',   W:'ext'  },
+  'Z':  { x1:202, y1:60,  x2:314, y2:172, fill:'#dceee0', name:'مطبخ',      dim:'4×4',   N:'ext', S:'Y',   E:'N',   W:'V'    },
+  'U':  { x1:90,  y1:172, x2:160, y2:228, fill:'#dceee0', name:'حمام',      dim:'2.5×2', N:'V',   S:'S',   E:'T',   W:'ext'  },
+  'T':  { x1:160, y1:172, x2:258, y2:228, fill:'#dceee0', name:'ممر',       dim:'3.5×2', N:'Z',   S:'X',   E:'Y',   W:'U'    },
+  'Y':  { x1:258, y1:172, x2:314, y2:228, fill:'#dceee0', name:'مخزن',      dim:'2×2',   N:'Z',   S:'X',   E:'M',   W:'T'    },
+  'S':  { x1:90,  y1:228, x2:202, y2:340, fill:'#dceee0', name:'غرفة',      dim:'4×4',   N:'T+U', S:'Q+R', E:'X',   W:'ext'  },
+  'X':  { x1:202, y1:228, x2:314, y2:396, fill:'#dceee0', name:'صالة',      dim:'4×6',   N:'T+Y', S:'AC',  E:'L',   W:'S'    },
+  'Q':  { x1:90,  y1:340, x2:160, y2:396, fill:'#dceee0', name:'حمام',      dim:'2.5×2', N:'S',   S:'P',   E:'R',   W:'ext'  },
+  'R':  { x1:160, y1:340, x2:202, y2:396, fill:'#dceee0', name:'ممر',       dim:'1.5×2', N:'S',   S:'P',   E:'X',   W:'Q'    },
+  'P':  { x1:90,  y1:396, x2:202, y2:536, fill:'#dceee0', name:'غرفة نوم',  dim:'4×5',   N:'Q+R', S:'O',   E:'AA',  W:'ext'  },
+  'AA': { x1:202, y1:396, x2:258, y2:578, fill:'#dceee0', name:'ممر',       dim:'2×6.5', N:'X',   S:'AB',  E:'AC+W',W:'P'    },
+  'O':  { x1:90,  y1:536, x2:202, y2:648, fill:'#dceee0', name:'مجلس',      dim:'4×4',   N:'P',   S:'ext', E:'AB',  W:'ext'  },
+  'AB': { x1:202, y1:578, x2:258, y2:648, fill:'#dceee0', name:'حمام',      dim:'2×2.5', N:'AA',  S:'ext', E:'W',   W:'O'    },
+};
+
+// ══════════════════════════════════════════════════════════
+// قاموس الجدران
+// القاعدة: يُرسم الجدار من الجار الشمالي (أفقي) أو الغربي (رأسي)
+// id: يصف المساحتين المفصولتين — الجدران الخارجية تحتوي 'ext'
+// ══════════════════════════════════════════════════════════
+
+const walls = [
+  // ══ أفقية داخلية (axis:H) ══
+
+  // y=172
+  { id:'V|U',   axis:'H', x1:90,  x2:160, y:172 },
+  { id:'V|T',   axis:'H', x1:160, x2:202, y:172 },
+  { id:'Z|T',   axis:'H', x1:202, x2:258, y:172 },
+  { id:'Z|Y',   axis:'H', x1:258, x2:314, y:172 },
+  { id:'N|M',   axis:'H', x1:314, x2:370, y:172 },
+  { id:'N|F',   axis:'H', x1:370, x2:426, y:172 },
+  { id:'H|F',   axis:'H', x1:426, x2:468, y:172 },
+  { id:'H|G',   axis:'H', x1:468, x2:538, y:172 },
+
+  // y=228
+  { id:'U|S',   axis:'H', x1:90,  x2:160, y:228 },
+  { id:'T|S',   axis:'H', x1:160, x2:202, y:228 },
+  { id:'T|X',   axis:'H', x1:202, x2:258, y:228 },
+  { id:'Y|X',   axis:'H', x1:258, x2:314, y:228 },
+  { id:'M|L',   axis:'H', x1:314, x2:370, y:228 },
+  { id:'F|L',   axis:'H', x1:370, x2:426, y:228 },
+  { id:'F|E',   axis:'H', x1:426, x2:468, y:228 },
+  { id:'G|E',   axis:'H', x1:468, x2:538, y:228 },
+
+  // y=340
+  { id:'S|Q+R', axis:'H', x1:90,  x2:202, y:340 },
+  { id:'E|C+D', axis:'H', x1:426, x2:538, y:340 },
+
+  // y=396
+  { id:'Q|P',   axis:'H', x1:90,  x2:160, y:396 },
+  { id:'R|P',   axis:'H', x1:160, x2:202, y:396 },
+  { id:'X|AA',  axis:'H', x1:202, x2:258, y:396 },
+  { id:'X|AC',  axis:'H', x1:258, x2:314, y:396 },
+  { id:'L|AC',  axis:'H', x1:314, x2:370, y:396 },
+  { id:'L|J',   axis:'H', x1:370, x2:426, y:396 },
+  { id:'C+D|B', axis:'H', x1:426, x2:538, y:396 },
+
+  // y=452
+  { id:'AC|W',  axis:'H', x1:258, x2:370, y:452 },
+
+  // y=536
+  { id:'P|O',   axis:'H', x1:90,  x2:202, y:536 },
+  { id:'B|A',   axis:'H', x1:426, x2:538, y:536 },
+
+  // y=578
+  { id:'AA|AB', axis:'H', x1:202, x2:258, y:578 },
+  { id:'J|K',   axis:'H', x1:370, x2:426, y:578 },
+
+  // ══ الجدار الشمالي الخارجي (y=60) ══
+  { id:'V|ext-N',  axis:'H', x1:90,  x2:202, y:60  },
+  { id:'Z|ext-N',  axis:'H', x1:202, x2:314, y:60  },
+  { id:'N|ext-N',  axis:'H', x1:314, x2:426, y:60  },
+  { id:'H|ext-N',  axis:'H', x1:426, x2:538, y:60  },
+
+  // ══ الجدار الجنوبي الخارجي (y=648) ══
+  { id:'O|ext-S',  axis:'H', x1:90,  x2:202, y:648 },
+  { id:'AB|ext-S', axis:'H', x1:202, x2:258, y:648 },
+  { id:'W|ext-S',  axis:'H', x1:258, x2:314, y:648 },
+  { id:'I|ext-S',  axis:'H', x1:314, x2:370, y:648 },
+  { id:'K|ext-S',  axis:'H', x1:370, x2:426, y:648 },
+  { id:'A|ext-S',  axis:'H', x1:426, x2:538, y:648 },
+
+  // ══ الجدار الغربي الخارجي (x=90) ══
+  { id:'V|ext-W',  axis:'V', y1:60,  y2:172, x:90  },
+  { id:'U|ext-W',  axis:'V', y1:172, y2:228, x:90  },
+  { id:'S|ext-W',  axis:'V', y1:228, y2:340, x:90  },
+  { id:'Q|ext-W',  axis:'V', y1:340, y2:396, x:90  },
+  { id:'P|ext-W',  axis:'V', y1:396, y2:536, x:90  },
+  { id:'O|ext-W',  axis:'V', y1:536, y2:648, x:90  },
+
+  // ══ الجدار الشرقي الخارجي (x=538) ══
+  { id:'H|ext-E',  axis:'V', y1:60,  y2:172, x:538 },
+  { id:'G|ext-E',  axis:'V', y1:172, y2:228, x:538 },
+  { id:'E|ext-E',  axis:'V', y1:228, y2:340, x:538 },
+  { id:'D|ext-E',  axis:'V', y1:340, y2:396, x:538 },
+  { id:'B|ext-E',  axis:'V', y1:396, y2:536, x:538 },
+  { id:'A|ext-E',  axis:'V', y1:536, y2:648, x:538 },
+
+  // ══ رأسية داخلية (axis:V) ══
+
+  // x=160
+  { id:'U|T',    axis:'V', y1:172, y2:228, x:160 },
+  { id:'Q|R',    axis:'V', y1:340, y2:396, x:160 },
+
+  // x=202
+  { id:'V|Z',    axis:'V', y1:60,  y2:172, x:202 },
+  { id:'S|X',    axis:'V', y1:228, y2:340, x:202 },
+  { id:'Q+R|X',  axis:'V', y1:340, y2:396, x:202 },
+  { id:'P|AA',   axis:'V', y1:396, y2:536, x:202 },
+  { id:'O|AA',   axis:'V', y1:536, y2:578, x:202 },
+  { id:'O|AB',   axis:'V', y1:578, y2:648, x:202 },
+
+  // x=258 — الحد بين Z وN هو x=314، لا جدار هنا بينهما
+  { id:'T|Y',    axis:'V', y1:172, y2:228, x:258 },
+  { id:'AA|AC',  axis:'V', y1:396, y2:452, x:258 },
+  { id:'AA|W',   axis:'V', y1:452, y2:578, x:258 },
+  { id:'AB|W',   axis:'V', y1:578, y2:648, x:258 },
+
+  // x=314
+  { id:'N|H',    axis:'V', y1:60,  y2:172, x:314 },
+  { id:'M|F',    axis:'V', y1:172, y2:228, x:314 },
+  { id:'L|E',    axis:'V', y1:228, y2:396, x:314 },
+
+  // x=370
+  { id:'M|F_s',  axis:'V', y1:172, y2:228, x:370 }, // الحد الغربي لـF (شرق M)
+  { id:'J|AC',   axis:'V', y1:396, y2:452, x:370 },
+  { id:'J|W',    axis:'V', y1:452, y2:578, x:370 },
+  { id:'K|W',    axis:'V', y1:578, y2:648, x:370 },
+
+  // x=426
+  { id:'N|H_s',  axis:'V', y1:60,  y2:172, x:426 }, // الحد الغربي لـH (شرق N)
+  { id:'L|E_s',  axis:'V', y1:228, y2:340, x:426 }, // امتداد L|E شمالاً
+  { id:'L|C',    axis:'V', y1:340, y2:396, x:426 },
+  { id:'J|B',    axis:'V', y1:396, y2:536, x:426 },
+  { id:'J|A',    axis:'V', y1:536, y2:578, x:426 },
+  { id:'K|A',    axis:'V', y1:578, y2:648, x:426 },
+
+  // x=468
+  { id:'F|G',    axis:'V', y1:172, y2:228, x:468 },
+  { id:'C|D',    axis:'V', y1:340, y2:396, x:468 },
+];
+
+// ══════════════════════════════════════════════════════════
+// قاموس الأبواب
+// ══════════════════════════════════════════════════════════
+
+const doors = [
+  { id:'ML-door',      axis:'H', y:228, x1:393.8, x2:421.8, wall:'F|L',    label:'1.0م', hinge:'end',   inward:'S' },
+  { id:'JK-door',      axis:'H', y:578, x1:393.8, x2:421.8, wall:'J|K',    label:'1.0م', hinge:'end',   inward:'N' },
+  { id:'LJ-door',      axis:'H', y:396, x1:393.8, x2:421.8, wall:'L|J',    label:'1.0م', hinge:'end',   inward:'N' },
+  { id:'CDB-door',     axis:'H', y:396, x1:430.2, x2:458.2, wall:'C+D|B',  label:'1.0م', hinge:'start', inward:'N' },
+  { id:'FG-E-door',    axis:'H', y:228, x1:430.2, x2:458.2, wall:'F|E',    label:'1.0م', hinge:'start', inward:'S' },
+  { id:'HF-door',      axis:'H', y:172, x1:430.2, x2:458.2, wall:'H|F',    label:'1.0م', hinge:'start', inward:'N' },
+  { id:'NF-door',      axis:'H', y:172, x1:393.8, x2:421.8, wall:'N|F',    label:'1.0م', hinge:'end',   inward:'E' },
+  { id:'W-south-door', axis:'H', y:648, x1:323.8, x2:365.8, wall:'W|ext-S',label:'1.5م', hinge:'start', inward:'N' },
+  { id:'main-gate',    axis:'H', y:732, x1:286,   x2:342,   wall:'site-S',  label:'باب رئيسي — 2.0م', hinge:'start', inward:'N' },
+  { id:'AAAB-door',    axis:'H', y:578, x1:206.2, x2:234.2, wall:'AA|AB',  label:'1.0م', hinge:'start', inward:'N' },
+  { id:'XAA-door',     axis:'H', y:396, x1:206.2, x2:234.2, wall:'X|AA',   label:'1.0م', hinge:'start', inward:'N' },
+  { id:'RP-door',      axis:'H', y:396, x1:169.8, x2:197.8, wall:'R|P',    label:'1.0م', hinge:'end',   inward:'N' },
+  { id:'TX-door',      axis:'H', y:228, x1:206.2, x2:234.2, wall:'T|X',    label:'1.0م', hinge:'start', inward:'N' },
+  { id:'TS-door',      axis:'H', y:228, x1:169.8, x2:197.8, wall:'T|S',    label:'1.0م', hinge:'end',   inward:'N' },
+  { id:'VT-door',      axis:'H', y:172, x1:169.8, x2:197.8, wall:'V|T',    label:'1.0م', hinge:'end',   inward:'W' },
+  { id:'ZT-door',      axis:'H', y:172, x1:206.2, x2:234.2, wall:'Z|T',    label:'1.0م', hinge:'start', inward:'N' },
+  { id:'JA-door',      axis:'V', x:426, y1:540.2, y2:568.2, wall:'J|A',    label:'1.0م', hinge:'start', inward:'E' },
+  { id:'CD-door',      axis:'V', x:468, y1:363.8, y2:391.8, wall:'C|D',    label:'1.0م', hinge:'start', inward:'W' },
+  { id:'I-J-door',     axis:'V', x:370, y1:508,   y2:536,   wall:'J|W',    label:'1.0م', hinge:'start', inward:'E' },
+  { id:'F-G-door',     axis:'V', x:468, y1:195.8, y2:223.8, wall:'F|G',    label:'1.0م', hinge:'end',   inward:'S' },
+  { id:'LC-door',      axis:'V', x:426, y1:344.2, y2:372.2, wall:'L|C',    label:'1.0م', hinge:'start', inward:'W' },
+  { id:'M-Fs-door',    axis:'V', x:370, y1:176.2, y2:204.2, wall:'M|F_s',  label:'1.0م', hinge:'start', inward:'E' },
+  { id:'AAW-door',     axis:'V', x:258, y1:513,   y2:541,   wall:'AA|W',   label:'1.0م', hinge:'start', inward:'W' },
+  { id:'OAA-door',     axis:'V', x:202, y1:540.2, y2:568.2, wall:'O|AA',   label:'1.0م', hinge:'start', inward:'E' },
+  { id:'QRX-door',     axis:'V', x:202, y1:344.2, y2:372.2, wall:'Q+R|X',  label:'1.0م', hinge:'start', inward:'W' },
+  { id:'QR-door',      axis:'V', x:160, y1:363.8, y2:391.8, wall:'Q|R',    label:'1.0م', hinge:'end',   inward:'E' },
+  { id:'UT-door',      axis:'V', x:160, y1:195.8, y2:223.8, wall:'U|T',    label:'1.0م', hinge:'end',   inward:'S' },
+  { id:'TY-door',      axis:'V', x:258, y1:176.2, y2:204.2, wall:'T|Y',    label:'1.0م', hinge:'start', inward:'E' },
+];
+
+// ══════════════════════════════════════════════════════════
+// قاموس النوافذ
+// ══════════════════════════════════════════════════════════
+
+const windowsData = [
+  { id:'K|ext-S',  axis:'H', y:648, x1:388.2, x2:407.8 },
+  { id:'A|ext-S',  axis:'H', y:648, x1:468.0, x2:496.0 },
+  { id:'O|ext-S',  axis:'H', y:648, x1:132.0, x2:160.0 },
+  { id:'AB|ext-S', axis:'H', y:648, x1:220.2, x2:239.8 },
+  { id:'W|ext-S',  axis:'H', y:648, x1:276.2, x2:295.8 },
+  { id:'H|ext-N',  axis:'H', y:60,  x1:468.0, x2:496.0 },
+  { id:'N|ext-N',  axis:'H', y:60,  x1:356.0, x2:384.0 },
+  { id:'Z|ext-N',  axis:'H', y:60,  x1:244.0, x2:272.0 },
+  { id:'V|ext-N',  axis:'H', y:60,  x1:132.0, x2:160.0 },
+  { id:'A|ext-E',  axis:'V', x:538, y1:578.0, y2:606.0 },
+  { id:'B|ext-E',  axis:'V', x:538, y1:452.0, y2:480.0 },
+  { id:'D|ext-E',  axis:'V', x:538, y1:358.2, y2:377.8 },
+  { id:'E|ext-E',  axis:'V', x:538, y1:270.0, y2:298.0 },
+  { id:'G|ext-E',  axis:'V', x:538, y1:190.2, y2:209.8 },
+  { id:'H|ext-E',  axis:'V', x:538, y1:102.0, y2:130.0 },
+  { id:'V|ext-W',  axis:'V', x:90,  y1:102.0, y2:130.0 },
+  { id:'U|ext-W',  axis:'V', x:90,  y1:190.2, y2:209.8 },
+  { id:'S|ext-W',  axis:'V', x:90,  y1:270.0, y2:298.0 },
+  { id:'Q|ext-W',  axis:'V', x:90,  y1:354.0, y2:382.0 },
+  { id:'P|ext-W',  axis:'V', x:90,  y1:452.0, y2:480.0 },
+  { id:'O|ext-W',  axis:'V', x:90,  y1:578.0, y2:606.0 },
+];
+
+// ══════════════════════════════════════════════════════════
+// مواضع الأحرف وألوانها
+// ══════════════════════════════════════════════════════════
+
+const letterPos = {
+  'A' :[482,590], 'B' :[482,470], 'C' :[447,368], 'D':[503,368],
+  'E' :[482,284], 'F' :[419,200], 'G' :[503,200], 'H':[482,116],
+  'I' :[346,594], 'J' :[398,487], 'K' :[398,620], 'L':[370,312],
+  'M' :[342,200], 'N' :[370,116], 'AC':[314,424], 'W':[314,464],
+  'O' :[146,590], 'P' :[146,470], 'Q' :[125,368], 'R':[181,368],
+  'S' :[146,284], 'T' :[209,200], 'U' :[125,200], 'V':[146,116],
+  'AA':[230,487], 'AB':[230,620], 'X' :[258,312], 'Y':[286,200], 'Z':[258,116],
+  'AD':[281,594], // مساحة AD (غير مرسومة في spaces، حرفها فقط)
+};
+const RIGHT_SPACES  = new Set(['A','B','C','D','E','F','G','H','I','J','K','L','M','N']);
+const CENTER_SPACES = new Set(['AC','W','AD']);
+const LETTER_COLORS = { right:'#1a3352', left:'#1a4d2e', center:'#6b4c1e' };
+
+// ══════════════════════════════════════════════════════════
+// دوال المساعدة
+// ══════════════════════════════════════════════════════════
+
+const svgEl = document.getElementById('main-svg');
+
+/** إنشاء عنصر SVG بخصائص وإلحاقه بالوالد */
+function el(tag, attrs, parent) {
+  const e = document.createElementNS('http://www.w3.org/2000/svg', tag);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+  if (parent) parent.appendChild(e);
+  return e;
+}
+
+/** إنشاء مجموعة SVG بمعرف */
+function group(id, parent) {
+  return el('g', { id }, parent);
+}
+
+/**
+ * رسم خط كوتة (بُعد) مع علامتَي نهايتيه ونصه
+ * @param {number} x1,y1,x2,y2 — نقطتا الخط
+ * @param {string} txt         — النص
+ * @param {number} ox,oy       — موضع النص
+ * @param {string} tanchor     — محاذاة النص
+ * @param {number} rot         — زاوية دوران (0 = بدون دوران)
+ * @param {number} rx,ry       — مركز الدوران
+ */
+function dimLine(x1, y1, x2, y2, txt, ox, oy, tanchor, rot, rx, ry) {
+  el('line', { x1, y1, x2, y2, stroke:DIM.stroke, 'stroke-width':0.8 }, gStatic);
+  if (x1 === x2) { // رأسي
+    el('line', { x1:x1-DIM.tick/2, y1, x2:x1+DIM.tick/2, y2:y1, stroke:DIM.stroke, 'stroke-width':0.8 }, gStatic);
+    el('line', { x1:x2-DIM.tick/2, y1:y2, x2:x2+DIM.tick/2, y2, stroke:DIM.stroke, 'stroke-width':0.8 }, gStatic);
+  } else { // أفقي
+    el('line', { x1, y1:y1-DIM.tick/2, x2:x1, y2:y1+DIM.tick/2, stroke:DIM.stroke, 'stroke-width':0.8 }, gStatic);
+    el('line', { x1:x2, y1:y2-DIM.tick/2, x2, y2:y2+DIM.tick/2, stroke:DIM.stroke, 'stroke-width':0.8 }, gStatic);
+  }
+  const t = el('text', { x:ox, y:oy, 'text-anchor':tanchor, fill:DIM.stroke, 'font-size':DIM.fs, 'font-weight':DIM.fw, 'font-family':'IBM Plex Sans Arabic,sans-serif' }, gStatic);
+  if (rot) t.setAttribute('transform', `rotate(${rot},${rx},${ry})`);
+  t.textContent = txt;
+}
+
+/**
+ * رسم باب (طمس خط الجدار + عتبتان)
+ * يُكتب تسمية الباب في طبقة gDoorLabels منفصلة
+ */
+function drawDoor(d) {
+  if (d.axis === 'H') {
+    el('line', { x1:d.x1, y1:d.y,       x2:d.x2, y2:d.y,       stroke:DOOR.gapColor,  'stroke-width':DOOR.gapWidth }, gDoors);
+    el('line', { x1:d.x1, y1:d.y-DOOR.jambLen, x2:d.x1, y2:d.y+DOOR.jambLen, stroke:DOOR.jambColor, 'stroke-width':DOOR.jamb }, gDoors);
+    el('line', { x1:d.x2, y1:d.y-DOOR.jambLen, x2:d.x2, y2:d.y+DOOR.jambLen, stroke:DOOR.jambColor, 'stroke-width':DOOR.jamb }, gDoors);
+    const mx = (d.x1 + d.x2) / 2;
+    const ty = d.inward === 'N' ? d.y + 12 : d.y - 5;
+    el('text', { class:'ts', x:mx, y:ty, 'text-anchor':'middle', fill:'#1a6b8a', 'font-weight':600 }, gDoorLabels).textContent = d.label;
+  } else {
+    el('line', { x1:d.x, y1:d.y1, x2:d.x, y2:d.y2, stroke:DOOR.gapColor,  'stroke-width':DOOR.gapWidth }, gDoors);
+    el('line', { x1:d.x-DOOR.jambLen, y1:d.y1, x2:d.x+DOOR.jambLen, y2:d.y1, stroke:DOOR.jambColor, 'stroke-width':DOOR.jamb }, gDoors);
+    el('line', { x1:d.x-DOOR.jambLen, y1:d.y2, x2:d.x+DOOR.jambLen, y2:d.y2, stroke:DOOR.jambColor, 'stroke-width':DOOR.jamb }, gDoors);
+    const my = (d.y1 + d.y2) / 2;
+    const tx     = d.inward === 'E' ? d.x + 6 : d.x - 6;
+    const anchor = d.inward === 'E' ? 'start'  : 'end';
+    el('text', { class:'ts', x:tx, y:my+4, 'text-anchor':anchor, fill:'#1a6b8a', 'font-weight':600 }, gDoorLabels).textContent = d.label;
+  }
+}
+
+/**
+ * رسم نافذة (طمس خط الجدار بلون مختلف + عتبتان)
+ * يُكتب المقاس في طبقة gWindowLabels منفصلة
+ */
+function drawWindow(w) {
+  if (w.axis === 'H') {
+    el('line', { x1:w.x1, y1:w.y, x2:w.x2, y2:w.y, stroke:WIN.gapColor, 'stroke-width':WIN.gapWidth }, gWindows);
+    el('line', { x1:w.x1, y1:w.y-WIN.jambLen, x2:w.x1, y2:w.y+WIN.jambLen, stroke:WIN.jambColor, 'stroke-width':WIN.jamb }, gWindows);
+    el('line', { x1:w.x2, y1:w.y-WIN.jambLen, x2:w.x2, y2:w.y+WIN.jambLen, stroke:WIN.jambColor, 'stroke-width':WIN.jamb }, gWindows);
+    const wm  = ((w.x2 - w.x1) / SCALE).toFixed(2).replace(/\.?0+$/, '') + 'm';
+    const mx  = (w.x1 + w.x2) / 2;
+    const ty  = w.y === 60 ? w.y - 4 : w.y + 12;
+    el('text', { class:'ts', x:mx, y:ty, 'text-anchor':'middle', fill:'#1a6b8a', 'font-weight':600 }, gWindowLabels).textContent = wm;
+  } else {
+    el('line', { x1:w.x, y1:w.y1, x2:w.x, y2:w.y2, stroke:WIN.gapColor, 'stroke-width':WIN.gapWidth }, gWindows);
+    el('line', { x1:w.x-WIN.jambLen, y1:w.y1, x2:w.x+WIN.jambLen, y2:w.y1, stroke:WIN.jambColor, 'stroke-width':WIN.jamb }, gWindows);
+    el('line', { x1:w.x-WIN.jambLen, y1:w.y2, x2:w.x+WIN.jambLen, y2:w.y2, stroke:WIN.jambColor, 'stroke-width':WIN.jamb }, gWindows);
+    const wm     = ((w.y2 - w.y1) / SCALE).toFixed(2).replace(/\.?0+$/, '') + 'm';
+    const my     = (w.y1 + w.y2) / 2;
+    const tx     = w.x === 90 ? w.x - 6 : w.x + 6;
+    const anchor = w.x === 90 ? 'end' : 'start';
+    el('text', { class:'ts', x:tx, y:my+4, 'text-anchor':anchor, fill:'#1a6b8a', 'font-weight':600 }, gWindowLabels).textContent = wm;
+  }
+}
+
+// ══════════════════════════════════════════════════════════
+// بناء SVG — ترتيب الطبقات:
+//   g-static → g-fills → g-walls → g-windows → g-doors
+//   → g-names → g-innerdims → g-letters → g-wlabels
+//   → g-doorlabels → g-windowlabels
+// ══════════════════════════════════════════════════════════
+
+// ── 1. الطبقة الثابتة (السور + الكوتات + لوحة المعلومات) ──
+const gStatic = group('g-static', svgEl);
+
+// سور الموقع
+el('rect', { x:48, y:18, width:532, height:714, fill:'none', stroke:'#4a3728', 'stroke-width':5.5, 'stroke-linejoin':'miter' }, gStatic);
+
+// كوتات المبنى الداخلية
+dimLine(90,  50,  538, 50,  '16م',   314, 46,  'middle', 0,   0,   0  ); // عرض المبنى
+dimLine(548, 60,  548, 648, '21م',   558, 354, 'middle', 90,  558, 354); // طول المبنى
+
+// كوتات الموقع الكاملة
+dimLine(48,  8,   580, 8,   '19م',   314, 5,   'middle', 0,   0,   0  ); // عرض الموقع
+dimLine(594, 18,  594, 732, '25.5م', 606, 375, 'middle', 90,  606, 375); // طول الموقع
+
+// لوحة المعلومات
+{
+  const py = 760;
+  el('line', { x1:48, y1:py-10, x2:592, y2:py-10, stroke:'#2c3e50', 'stroke-width':0.8 }, gStatic);
+
+  el('text', { 'text-anchor':'middle', x:314, y:py+14, fill:'#1a1a1a', 'font-size':'13px', 'font-weight':'700', 'font-family':'IBM Plex Sans Arabic,sans-serif' }, gStatic)
+    .textContent = 'مخطط الطابق الأرضي — وحدتان سكنيتان';
+  el('text', { 'text-anchor':'middle', x:314, y:py+28, fill:'#555', 'font-size':'9px', 'font-family':'IBM Plex Sans Arabic,sans-serif' }, gStatic)
+    .textContent = 'أبعاد الموقع: 19م × 25.5م | المبنى: 16م × 21م';
+
+  // مقياس الرسم
+  const sx = 80, sy = py+55, sm = SCALE, steps = 5;
+  el('text', { 'text-anchor':'middle', x:sx+(steps*sm)/2, y:sy-8, fill:'#333', 'font-size':'8px', 'font-weight':'600', 'font-family':'IBM Plex Sans Arabic,sans-serif' }, gStatic)
+    .textContent = 'مقياس الرسم 1:100';
+  for (let i = 0; i < steps; i++) {
+    const rx = sx + i * sm;
+    el('rect', { x:rx, y:sy, width:sm, height:8, fill: i%2===0 ? '#2c3e50' : 'white', stroke:'#2c3e50', 'stroke-width':0.6 }, gStatic);
+    el('text', { 'text-anchor':'middle', x:rx, y:sy+18, fill:'#333', 'font-size':'7.5px', 'font-family':'IBM Plex Sans Arabic,sans-serif' }, gStatic)
+      .textContent = i + 'م';
+  }
+  el('text', { 'text-anchor':'middle', x:sx+steps*sm, y:sy+18, fill:'#333', 'font-size':'7.5px', 'font-family':'IBM Plex Sans Arabic,sans-serif' }, gStatic)
+    .textContent = steps + 'م';
+
+  // معلومات المساحة
+  const infoX = 400, infoY = py+38;
+  const info = [
+    ['المساحة الإجمالية للموقع', '484.5 م²'],
+    ['مساحة البناء (وحدتان)',    '~336 م²'],
+    ['الارتداد الشمالي / الجنوبي', '1.5م / 3.0م'],
+    ['الارتداد الشرقي / الغربي',   '1.5م / 1.5م'],
+  ];
+  info.forEach(([k, v], i) => {
+    el('text', { x:infoX+100, y:infoY+i*13, 'text-anchor':'end',   fill:'#333',    'font-size':'8px', 'font-family':'IBM Plex Sans Arabic,sans-serif' }, gStatic).textContent = k;
+    el('text', { x:infoX+105, y:infoY+i*13, 'text-anchor':'start', fill:'#1a6b8a', 'font-size':'8px', 'font-weight':'600', 'font-family':'IBM Plex Sans Arabic,sans-serif' }, gStatic).textContent = ': ' + v;
+  });
+
+  el('line', { x1:48, y1:py+85, x2:592, y2:py+85, stroke:'#2c3e50', 'stroke-width':0.8 }, gStatic);
+  el('text', { 'text-anchor':'start', x:52, y:py+96, fill:'#999', 'font-size':'7px', 'font-family':'IBM Plex Sans Arabic,sans-serif' }, gStatic)
+    .textContent = 'موكاب تصميمي — غير مرخص للبناء';
+}
+
+// ── 2. طبقة التعبئة ──
+const gFills = group('g-fills', svgEl);
+gFills.setAttribute('display', 'none');
+for (const [, sp] of Object.entries(spaces)) {
+  const attrs = { x:sp.x1, y:sp.y1, width:sp.x2-sp.x1, height:sp.y2-sp.y1, fill:sp.fill, stroke:'none' };
+  if (sp.opacity) attrs['fill-opacity'] = sp.opacity;
+  el('rect', attrs, gFills);
+}
+
+// ── 3. طبقة الجدران + الدرج ──
+const gWalls = group('g-walls', svgEl);
+for (const w of walls) {
+  const isExt = w.id.includes('ext');
+  const stroke = isExt ? WALL_EXT_COLOR : WALL_INT_COLOR;
+  const sw     = isExt ? WALL_EXT_WIDTH : WALL_INT_WIDTH;
+  if (w.axis === 'H') {
+    el('line', { x1:w.x1, y1:w.y, x2:w.x2, y2:w.y, stroke, 'stroke-width':sw }, gWalls);
+  } else {
+    el('line', { x1:w.x, y1:w.y1, x2:w.x, y2:w.y2, stroke, 'stroke-width':sw }, gWalls);
+  }
+}
+
+// درج منطقة W (خطوط الدرجات)
+const stairLines = [
+  [309.8,648,309.8,564],[318.2,648,318.2,564],[309.8,564,318.2,564],
+  [318.2,576,370,576],  [318.2,588,370,588],  [318.2,600,370,600],
+  [258,564,309.8,564],  [258,576,309.8,576],  [258,588,309.8,588],
+  [258,600,309.8,600],  [258,612,309.8,612],  [258,624,309.8,624],[258,636,309.8,636],
+];
+for (const [x1,y1,x2,y2] of stairLines) {
+  el('line', { x1, y1, x2, y2, stroke:'#d4845a', 'stroke-width':1.2 }, gWalls);
+}
+
+// ── 4. طبقة النوافذ ──
+const gWindows      = group('g-windows',      svgEl);
+const gWindowLabels = group('g-windowlabels', svgEl);
+gWindowLabels.setAttribute('display', 'none');
+for (const w of windowsData) drawWindow(w);
+
+// ── 5. طبقة الأبواب ──
+const gDoors      = group('g-doors',      svgEl);
+const gDoorLabels = group('g-doorlabels', svgEl);
+gDoorLabels.setAttribute('display', 'none');
+for (const d of doors) drawDoor(d);
+
+// ── 6. طبقة المسميات ──
+const gNames = group('g-names', svgEl);
+for (const [id, sp] of Object.entries(spaces)) {
+  if (!sp.name) continue;
+  const x   = (sp.x1 + sp.x2) / 2;
+  const y   = id === 'W' ? sp.y1 + 24 : (sp.y1 + sp.y2) / 2 + 4;
+  const col = ['AC','W'].includes(id) ? '#7a5c1a' : '#5c3566';
+  el('text', { class:'tn', x, y, 'text-anchor':'middle', fill:col }, gNames).textContent = sp.name;
+}
+
+// ── 7. طبقة الأبعاد الداخلية ──
+const gInnerdims = group('g-innerdims', svgEl);
+gInnerdims.setAttribute('display', 'none');
+for (const [id, sp] of Object.entries(spaces)) {
+  if (!sp.dim) continue;
+  const x = (sp.x1 + sp.x2) / 2;
+  const y = id === 'W' ? sp.y1 + 36 : (sp.y1 + sp.y2) / 2 + 16;
+  el('text', { class:'ts', x, y, 'text-anchor':'middle', fill:'#7a8a96' }, gInnerdims).textContent = sp.dim;
+}
+
+// ── 8. طبقة الأحرف ──
+const gLetters = group('g-letters', svgEl);
+gLetters.setAttribute('display', 'none');
+for (const [id, [x, y]] of Object.entries(letterPos)) {
+  const col = CENTER_SPACES.has(id) ? LETTER_COLORS.center
+            : RIGHT_SPACES.has(id)  ? LETTER_COLORS.right
+            : LETTER_COLORS.left;
+  el('text', { class:'th', x, y, 'text-anchor':'middle', fill:col }, gLetters).textContent = id;
+}
+
+// ── 9. طبقة أسماء الجدران ──
+const gWlabels = group('g-wlabels', svgEl);
+gWlabels.setAttribute('display', 'none');
+for (const w of walls) {
+  let x, y, rot = 0;
+  if (w.axis === 'H') {
+    x = (w.x1 + w.x2) / 2;
+    y = w.y - 3;
+  } else {
+    x = w.x + 3;
+    y = (w.y1 + w.y2) / 2;
+    rot = -90;
+  }
+  const px = w.axis === 'H' ? (w.x2 - w.x1) : (w.y2 - w.y1);
+  const m  = (px / SCALE).toFixed(1);
+  const t  = el('text', { class:'twl', x, y, 'text-anchor':'middle', fill:'#b04000' }, gWlabels);
+  if (rot) t.setAttribute('transform', `rotate(${rot},${x},${y})`);
+  t.textContent = `${w.id} | ${m}`;
+}
+
+// ══════════════════════════════════════════════════════════
+// إدارة الطبقات
+// ══════════════════════════════════════════════════════════
+
+// كائن موحد: الحالة + مرجع عنصر الـ SVG + زر الشريط
+const LAYERS = {
+  fills:        { on:false, el: gFills,        btn: document.getElementById('lb-fills')        },
+  walls:        { on:true,  el: gWalls,         btn: document.getElementById('lb-walls')        },
+  wlabels:      { on:false, el: gWlabels,       btn: document.getElementById('lb-wlabels')      },
+  letters:      { on:false, el: gLetters,       btn: document.getElementById('lb-letters')      },
+  names:        { on:true,  el: gNames,         btn: document.getElementById('lb-names')        },
+  innerdims:    { on:false, el: gInnerdims,     btn: document.getElementById('lb-innerdims')    },
+  doors:        { on:true,  el: gDoors,         btn: document.getElementById('lb-doors')        },
+  doorlabels:   { on:false, el: gDoorLabels,    btn: document.getElementById('lb-doorlabels')   },
+  windows:      { on:true,  el: gWindows,       btn: document.getElementById('lb-windows')      },
+  windowlabels: { on:false, el: gWindowLabels,  btn: document.getElementById('lb-windowlabels') },
+};
+
+function toggleLayer(name) {
+  const L = LAYERS[name];
+  L.on = !L.on;
+  L.el.setAttribute('display', L.on ? '' : 'none');
+  L.btn.classList.toggle('on', L.on);
+}
+
+// ══════════════════════════════════════════════════════════
+// Zoom & Pan — viewBox based (حاد عند أي مستوى تكبير)
+// ══════════════════════════════════════════════════════════
+
+const canvas  = document.getElementById('canvas');
+const mainSvg = document.getElementById('main-svg');
+
+const CONTENT = { x:0, y:0, w:640, h:980 }; // أبعاد المحتوى الكاملة
+const PAD     = 40;                           // هامش عند الضبط التلقائي
+const MIN_VW  = 80;
+const MAX_VW  = 3000;
+
+let vx = 0, vy = 0, vw = CONTENT.w, vh = CONTENT.h;
+
+function setViewBox(x, y, w) {
+  vw = Math.min(Math.max(w, MIN_VW), MAX_VW);
+  vh = vw * (CONTENT.h / CONTENT.w);
+  vx = x;
+  vy = y;
+  mainSvg.setAttribute('viewBox', `${vx} ${vy} ${vw} ${vh}`);
+}
+
+function fitToScreen() {
+  const cw = canvas.clientWidth, ch = canvas.clientHeight;
+  const s  = Math.min((cw - PAD*2) / CONTENT.w, (ch - PAD*2) / CONTENT.h);
+  const fw = CONTENT.w / s;
+  const fx = CONTENT.x - (fw - CONTENT.w) / 2;
+  const fy = CONTENT.y - (fw * CONTENT.h / CONTENT.w - CONTENT.h) / 2;
+  setViewBox(fx, fy, fw);
+}
+
+function resetView() { fitToScreen(); }
+
+/** تحويل إحداثيات الشاشة إلى إحداثيات SVG viewBox */
+function screenToSVG(sx, sy) {
+  const rect = canvas.getBoundingClientRect();
+  return {
+    x: vx + ((sx - rect.left)  / rect.width)  * vw,
+    y: vy + ((sy - rect.top)   / rect.height) * vh,
+  };
+}
+
+// ── Wheel Zoom (نحو موضع الماوس) ──
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  const factor = e.deltaY < 0 ? 0.88 : 1/0.88;
+  const pt     = screenToSVG(e.clientX, e.clientY);
+  const newW   = vw * factor;
+  setViewBox(
+    pt.x - (pt.x - vx) * (newW / vw),
+    pt.y - (pt.y - vy) * (newW / vw),
+    newW
+  );
+}, { passive: false });
+
+// ── Mouse Drag ──
+let dragging = false, dragStart = null, dragVB = null;
+
+canvas.addEventListener('mousedown', e => {
+  if (e.button !== 0) return;
+  dragging  = true;
+  dragStart = { x: e.clientX, y: e.clientY };
+  dragVB    = { x: vx, y: vy };
+  canvas.classList.add('dragging');
+});
+window.addEventListener('mousemove', e => {
+  if (!dragging) return;
+  const rect = canvas.getBoundingClientRect();
+  setViewBox(
+    dragVB.x - (e.clientX - dragStart.x) / rect.width  * vw,
+    dragVB.y - (e.clientY - dragStart.y) / rect.height * vh,
+    vw
+  );
+});
+window.addEventListener('mouseup', () => {
+  dragging = false;
+  canvas.classList.remove('dragging');
+});
+
+// ── Touch (سحب + ضغطتان للتكبير) ──
+let t1 = null, t2 = null, tVB = null;
+
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault();
+  tVB = { x: vx, y: vy, w: vw };
+  if (e.touches.length === 1) {
+    t1 = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+    t2 = null;
+  } else if (e.touches.length === 2) {
+    t1 = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+    t2 = { x: e.touches[1].clientX, y: e.touches[1].clientY };
+  }
+}, { passive: false });
+
+canvas.addEventListener('touchmove', e => {
+  e.preventDefault();
+  const rect = canvas.getBoundingClientRect();
+  if (e.touches.length === 1 && t1 && !t2) {
+    setViewBox(
+      tVB.x - (e.touches[0].clientX - t1.x) / rect.width  * vw,
+      tVB.y - (e.touches[0].clientY - t1.y) / rect.height * vh,
+      vw
+    );
+  } else if (e.touches.length === 2 && t1 && t2) {
+    const oldDist = Math.hypot(t2.x - t1.x, t2.y - t1.y);
+    const newDist = Math.hypot(e.touches[1].clientX - e.touches[0].clientX, e.touches[1].clientY - e.touches[0].clientY);
+    const factor  = oldDist / newDist;
+    const cx      = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+    const cy      = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+    const pt      = screenToSVG(cx, cy);
+    const newW    = tVB.w * factor;
+    setViewBox(
+      pt.x - (pt.x - tVB.x) * (newW / tVB.w),
+      pt.y - (pt.y - tVB.y) * (newW / tVB.w),
+      newW
+    );
+  }
+}, { passive: false });
+
+canvas.addEventListener('touchend', e => {
+  if (e.touches.length === 0) { t1 = null; t2 = null; }
+});
+
+// ── Resize مع debounce ──
+let _resizeTimer;
+window.addEventListener('resize', () => {
+  clearTimeout(_resizeTimer);
+  _resizeTimer = setTimeout(fitToScreen, 100);
+});
+
+fitToScreen();
+</script>
+
+<!-- مؤشر الشمال -->
+<svg id="north-indicator" width="50" height="70"
+  style="position:fixed;bottom:20px;right:20px;z-index:20;filter:drop-shadow(0 2px 4px rgba(0,0,0,.3))"
+  viewBox="0 0 50 70" xmlns="http://www.w3.org/2000/svg">
+  <circle cx="25" cy="35" r="22" fill="#fafaf8" stroke="#2c3e50" stroke-width="1.5"/>
+  <polygon points="25,8 19,35 25,30 31,35" fill="#2c3e50"/>
+  <polygon points="25,62 19,35 25,40 31,35" fill="#ccc" stroke="#2c3e50" stroke-width="0.8"/>
+  <text x="25" y="5" text-anchor="middle" font-size="9" font-weight="700" fill="#2c3e50" font-family="Arial,sans-serif">N</text>
+</svg>
+
+</body>
+</html>
